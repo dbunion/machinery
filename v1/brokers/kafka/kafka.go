@@ -162,9 +162,10 @@ type KafkaBroker struct {
 	consumePeriod  time.Duration
 	consumeTimeout time.Duration
 
-	consumingWG  sync.WaitGroup // wait group to make sure whole consumption completes
-	processingWG sync.WaitGroup // use wait group to make sure task processing completes
-	delayedWG    sync.WaitGroup
+	consumingWG       sync.WaitGroup // wait group to make sure whole consumption completes
+	processingWG      sync.WaitGroup // use wait group to make sure task processing completes
+	delayedWG         sync.WaitGroup
+	enableDelayedTask bool
 }
 
 type messageInfo struct {
@@ -198,15 +199,23 @@ func New(cnf *config.Config) *KafkaBroker {
 		}
 	}
 
+	var delayedReader MessageReader
+	var delayedWriter MessageWriter
+	if cnf.Kafka != nil && cnf.Kafka.EnableDelayedTasks {
+		delayedReader = newKafkaReader(brokers, cnf.Kafka.ConsumerGroupId, readerCfg(), []string{cnf.Kafka.DelayedTasksTopic})
+		delayedWriter = newKafkaWriter(brokers, writerCfg(), []string{cnf.Kafka.DelayedTasksTopic})
+	}
+
 	// topic, delayedTasksTopic := cnf.Kafka.Topic, cnf.Kafka.DelayedTasksTopic
 	return &KafkaBroker{
-		Broker:         common.NewBroker(cnf),
-		reader:         newKafkaReader(brokers, cnf.Kafka.ConsumerGroupId, readerCfg(), []string{cnf.Kafka.Topic}),
-		writer:         newKafkaWriter(brokers, writerCfg(), []string{cnf.Kafka.Topic}),
-		delayedReader:  newKafkaReader(brokers, cnf.Kafka.ConsumerGroupId, readerCfg(), []string{cnf.Kafka.DelayedTasksTopic}),
-		delayedWriter:  newKafkaWriter(brokers, writerCfg(), []string{cnf.Kafka.DelayedTasksTopic}),
-		consumePeriod:  time.Duration(consumePeriod) * time.Millisecond,
-		consumeTimeout: time.Second * 30,
+		Broker:            common.NewBroker(cnf),
+		reader:            newKafkaReader(brokers, cnf.Kafka.ConsumerGroupId, readerCfg(), []string{cnf.Kafka.Topic}),
+		writer:            newKafkaWriter(brokers, writerCfg(), []string{cnf.Kafka.Topic}),
+		delayedReader:     delayedReader,
+		delayedWriter:     delayedWriter,
+		consumePeriod:     time.Duration(consumePeriod) * time.Millisecond,
+		consumeTimeout:    time.Second * 30,
+		enableDelayedTask: cnf.Kafka.EnableDelayedTasks,
 	}
 }
 
@@ -252,23 +261,25 @@ func (b *KafkaBroker) StartConsuming(consumerTag string, concurrency int, taskPr
 		}
 	}()
 
-	b.delayedWG.Add(1)
-	go func() {
-		defer b.delayedWG.Done()
-		for {
-			select {
-			// A way to stop this goroutine from b.StopConsuming
-			case <-b.GetStopChan():
-				return
-			default:
-				err := b.processDelayedTask()
-				if err != nil {
-					errorsChan <- err
+	if b.enableDelayedTask {
+		b.delayedWG.Add(1)
+		go func() {
+			defer b.delayedWG.Done()
+			for {
+				select {
+				// A way to stop this goroutine from b.StopConsuming
+				case <-b.GetStopChan():
 					return
+				default:
+					err := b.processDelayedTask()
+					if err != nil {
+						errorsChan <- err
+						return
+					}
 				}
 			}
-		}
-	}()
+		}()
+	}
 
 	if err := b.consume(deliveries, concurrency, taskProcessor, errorsChan); err != nil {
 		return b.GetRetry(), err
@@ -380,7 +391,7 @@ func (b *KafkaBroker) Publish(ctx context.Context, signature *tasks.Signature) e
 
 	// Check the ETA signature field, if it is set and it is in the future,
 	// delay the task
-	if signature.ETA != nil {
+	if b.enableDelayedTask && signature.ETA != nil {
 		now := time.Now().UTC()
 
 		if signature.ETA.After(now) {
@@ -396,14 +407,19 @@ func (b *KafkaBroker) Publish(ctx context.Context, signature *tasks.Signature) e
 // StopConsuming quits the loop
 func (b *KafkaBroker) StopConsuming() {
 	b.Broker.StopConsuming()
-	// Waiting for the delayed tasks goroutine to have stopped
-	b.delayedWG.Wait()
+
+	if b.enableDelayedTask {
+		// Waiting for the delayed tasks goroutine to have stopped
+		b.delayedWG.Wait()
+	}
 	// Waiting for consumption to finish
 	b.consumingWG.Wait()
 
 	b.reader.Close()
-	b.delayedReader.Close()
-
 	b.writer.Close()
-	b.delayedWriter.Close()
+
+	if b.enableDelayedTask {
+		b.delayedReader.Close()
+		b.delayedWriter.Close()
+	}
 }

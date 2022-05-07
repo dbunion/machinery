@@ -114,7 +114,8 @@ type KafkaConfig struct {
 
 	// the interval at which offsets are committed to the broker. If 0, commits will be handled synchronously.
 	// default: 0
-	CommitInterval int `yaml:"commit_interval" envconfig:"KAFKA_COMMIT_INTERVAL"`
+	CommitInterval     int  `yaml:"commit_interval" envconfig:"KAFKA_COMMIT_INTERVAL"`
+	EnableDelayedTasks bool `json:"enable_delayed_tasks"`
 }
 
 // DynamoDBConfig wraps DynamoDB related configuration
