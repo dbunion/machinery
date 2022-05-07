@@ -15,6 +15,7 @@ import (
 	eagerbroker "github.com/RichardKnop/machinery/v1/brokers/eager"
 	gcppubsubbroker "github.com/RichardKnop/machinery/v1/brokers/gcppubsub"
 	brokeriface "github.com/RichardKnop/machinery/v1/brokers/iface"
+	kafkabroker "github.com/RichardKnop/machinery/v1/brokers/kafka"
 	redisbroker "github.com/RichardKnop/machinery/v1/brokers/redis"
 	sqsbroker "github.com/RichardKnop/machinery/v1/brokers/sqs"
 
@@ -37,6 +38,10 @@ import (
 func BrokerFactory(cnf *config.Config) (brokeriface.Broker, error) {
 	if strings.HasPrefix(cnf.Broker, "amqp://") {
 		return amqpbroker.New(cnf), nil
+	}
+
+	if strings.HasPrefix(cnf.Broker, "kafka://") {
+		return kafkabroker.New(cnf), nil
 	}
 
 	if strings.HasPrefix(cnf.Broker, "amqps://") {
@@ -65,6 +70,9 @@ func BrokerFactory(cnf *config.Config) (brokeriface.Broker, error) {
 			if err != nil {
 				return nil, err
 			}
+			if val := cnf.Redis.Password; val != "" {
+				redisPassword = val
+			}
 			return redisbroker.New(cnf, redisHost, redisPassword, "", redisDB), nil
 		}
 	}
@@ -73,6 +81,10 @@ func BrokerFactory(cnf *config.Config) (brokeriface.Broker, error) {
 		redisSocket, redisPassword, redisDB, err := ParseRedisSocketURL(cnf.Broker)
 		if err != nil {
 			return nil, err
+		}
+
+		if val := cnf.Redis.Password; val != "" {
+			redisPassword = val
 		}
 
 		return redisbroker.New(cnf, "", redisPassword, redisSocket, redisDB), nil
@@ -144,9 +156,11 @@ func BackendFactory(cnf *config.Config) (backendiface.Backend, error) {
 			return redisbackend.NewGR(cnf, addrs, 0), nil
 		} else {
 			redisHost, redisPassword, redisDB, err := ParseRedisURL(cnf.ResultBackend)
-
 			if err != nil {
 				return nil, err
+			}
+			if val := cnf.Redis.Password; val != "" {
+				redisPassword = val
 			}
 
 			return redisbackend.New(cnf, redisHost, redisPassword, "", redisDB), nil
@@ -158,7 +172,9 @@ func BackendFactory(cnf *config.Config) (backendiface.Backend, error) {
 		if err != nil {
 			return nil, err
 		}
-
+		if val := cnf.Redis.Password; val != "" {
+			redisPassword = val
+		}
 		return redisbackend.New(cnf, "", redisPassword, redisSocket, redisDB), nil
 	}
 

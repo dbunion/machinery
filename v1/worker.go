@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/opentracing/opentracing-go"
-	
+
 	"github.com/RichardKnop/machinery/v1/backends/amqp"
 	"github.com/RichardKnop/machinery/v1/brokers/errs"
 	"github.com/RichardKnop/machinery/v1/log"
@@ -69,6 +69,14 @@ func (worker *Worker) LaunchAsync(errorsChan chan<- error) {
 		log.INFO.Printf("  - ExchangeType: %s", cnf.AMQP.ExchangeType)
 		log.INFO.Printf("  - BindingKey: %s", cnf.AMQP.BindingKey)
 		log.INFO.Printf("  - PrefetchCount: %d", cnf.AMQP.PrefetchCount)
+	}
+
+	if cnf.Kafka != nil {
+		log.INFO.Printf("- Kafka:")
+		log.INFO.Printf("  - Topic: %v", cnf.Kafka.Topic)
+		log.INFO.Printf("  - Token: %v", cnf.Kafka.Token)
+		log.INFO.Printf("  - ClientID: %v", cnf.Kafka.ClientID)
+		log.INFO.Printf("  - GroupID: %v", cnf.Kafka.ConsumerGroupId)
 	}
 
 	var signalWG sync.WaitGroup
