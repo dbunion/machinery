@@ -60,9 +60,10 @@ func newKafkaWriter(brokers []string, config *kafka.Config, topics []string) *ka
 // SendMessage - send message
 func (k *kafkaWriter) SendMessage(msg kafka.Message) error {
 	for i := 0; i < len(k.topics); i++ {
+		// We are not setting a message key, which means that all messages will
+		// be distributed randomly over the different partitions.
 		_, _, err := k.SyncProducer.SendMessage(&kafka.ProducerMessage{
 			Topic:     k.topics[i],
-			Key:       kafka.ByteEncoder(msg.Key),
 			Value:     kafka.ByteEncoder(msg.Value),
 			Offset:    0,
 			Partition: 0,
