@@ -245,19 +245,19 @@ func (b *KafkaBroker) StartConsuming(consumerTag string, concurrency int, taskPr
 				close(deliveries)
 				return
 			default:
-				ctx, cancelFunc := context.WithTimeout(context.Background(), b.consumeTimeout)
-				defer cancelFunc()
-				m, err := b.reader.Consume(ctx)
-
-				// timeout error, then retry
-				if errors.Is(err, context.DeadlineExceeded) {
-					continue
-				}
-				if err != nil {
-					errorsChan <- err
-					return
-				}
-				deliveries <- messageInfo{message: m, reader: b.reader}
+				//ctx, cancelFunc := context.WithTimeout(context.Background(), time.Hour*24)
+				//m, err := b.reader.Consume(ctx)
+				//
+				//// timeout error, then retry
+				//if errors.Is(err, context.DeadlineExceeded) {
+				//	continue
+				//}
+				//if err != nil {
+				//	errorsChan <- err
+				//	cancelFunc()
+				//	return
+				//}
+				deliveries <- messageInfo{reader: b.reader}
 			}
 		}
 	}()
@@ -317,7 +317,7 @@ func (b *KafkaBroker) consume(deliveries <-chan messageInfo, concurrency int, ta
 			// Consume the task inside a goroutine so multiple tasks
 			// can be processed concurrently
 			go func() {
-				if err := b.consumeOne(d.reader, d.message, taskProcessor); err != nil {
+				if err := b.consumeOne(d.reader, taskProcessor); err != nil {
 					errorsChan <- err
 				}
 
@@ -332,7 +332,12 @@ func (b *KafkaBroker) consume(deliveries <-chan messageInfo, concurrency int, ta
 	}
 }
 
-func (b *KafkaBroker) consumeOne(reader MessageReader, message kafka.Message, taskProcessor iface.TaskProcessor) error {
+func (b *KafkaBroker) consumeOne(reader MessageReader, taskProcessor iface.TaskProcessor) error {
+	message, err := reader.Consume(context.Background())
+	if err != nil {
+		return err
+	}
+
 	defer reader.CommitMessages(context.Background(), message)
 
 	// Unmarshal message body into signature struct
@@ -350,8 +355,7 @@ func (b *KafkaBroker) consumeOne(reader MessageReader, message kafka.Message, ta
 		return nil
 	}
 	log.DEBUG.Printf("Received new message: %s", message.Value)
-	err := taskProcessor.Process(signature)
-	return err
+	return taskProcessor.Process(signature)
 }
 
 func (b *KafkaBroker) processDelayedTask() error {
