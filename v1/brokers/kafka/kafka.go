@@ -78,19 +78,50 @@ func (k *kafkaWriter) SendMessage(msg kafka.Message) error {
 }
 
 type kafkaReader struct {
+	done chan struct{}
+	ctx  context.Context
 	kafka.ConsumerGroup
-	topics []string
+	topics   []string
+	consumer Consumer
 }
 
-func newKafkaReader(brokers []string, groupID string, config *kafka.Config, topics []string) *kafkaReader {
-	consumer, err := kafka.NewConsumerGroup(brokers, groupID, config)
+func newKafkaReader(ctx context.Context, brokers []string, groupID string, config *kafka.Config, topics []string) *kafkaReader {
+	client, err := kafka.NewConsumerGroup(brokers, groupID, config)
 	if err != nil {
 		panic(err)
 	}
-	return &kafkaReader{
-		ConsumerGroup: consumer,
+
+	r := &kafkaReader{
+		ctx:           ctx,
+		done:          make(chan struct{}),
+		ConsumerGroup: client,
 		topics:        topics,
+		consumer: Consumer{
+			message: make(chan kafka.Message, 100),
+		},
 	}
+
+	go func() {
+		for {
+			select {
+			case <-r.done:
+				return
+			default:
+				// `Consume` should be called inside an infinite loop, when a
+				// server-side rebalance happens, the consumer session will need to be
+				// recreated to get the new claims
+				if err := client.Consume(ctx, topics, &r.consumer); err != nil {
+					fmt.Printf("Error from consumer: %v\n", err)
+				}
+				// check if context was cancelled, signaling that the consumer should stop
+				if ctx.Err() != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	return r
 }
 
 // CommitMessages - commit message
@@ -100,24 +131,20 @@ func (k *kafkaReader) CommitMessages(ctx context.Context, msgs ...kafka.Message)
 
 // Consume - consumer
 func (k *kafkaReader) Consume(ctx context.Context) (kafka.Message, error) {
-	consumer := Consumer{
-		message: make(chan kafka.Message),
-	}
-
-	go func() {
-		if err := k.ConsumerGroup.Consume(ctx, k.topics, &consumer); err != nil {
-			fmt.Printf("consumer failure %v\n", err)
-		}
-	}()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return kafka.Message{}, ctx.Err()
-		case msg := <-consumer.message:
+		case msg := <-k.consumer.message:
 			return msg, nil
 		}
 	}
+}
+
+// Close - release
+func (k *kafkaReader) Close() error {
+	close(k.done)
+	return k.ConsumerGroup.Close()
 }
 
 // Consumer represents a Sarama consumer group consumer
@@ -146,6 +173,7 @@ func (consumer *Consumer) ConsumeClaim(session kafka.ConsumerGroupSession, claim
 		}
 
 		session.Commit()
+		session.MarkMessage(message, "")
 		break
 	}
 
@@ -180,6 +208,8 @@ func New(cnf *config.Config) *KafkaBroker {
 	readerCfg := func() *kafka.Config {
 		conf := kafka.NewConfig()
 		conf.ClientID = cnf.Kafka.ClientID
+
+		conf.Consumer.Group.Rebalance.Strategy = kafka.BalanceStrategyRange
 		return conf
 	}
 
@@ -203,14 +233,14 @@ func New(cnf *config.Config) *KafkaBroker {
 	var delayedReader MessageReader
 	var delayedWriter MessageWriter
 	if cnf.Kafka != nil && cnf.Kafka.EnableDelayedTasks {
-		delayedReader = newKafkaReader(brokers, cnf.Kafka.ConsumerGroupId, readerCfg(), []string{cnf.Kafka.DelayedTasksTopic})
+		delayedReader = newKafkaReader(context.Background(), brokers, cnf.Kafka.ConsumerGroupId, readerCfg(), []string{cnf.Kafka.DelayedTasksTopic})
 		delayedWriter = newKafkaWriter(brokers, writerCfg(), []string{cnf.Kafka.DelayedTasksTopic})
 	}
 
 	// topic, delayedTasksTopic := cnf.Kafka.Topic, cnf.Kafka.DelayedTasksTopic
 	return &KafkaBroker{
 		Broker:            common.NewBroker(cnf),
-		reader:            newKafkaReader(brokers, cnf.Kafka.ConsumerGroupId, readerCfg(), []string{cnf.Kafka.Topic}),
+		reader:            newKafkaReader(context.Background(), brokers, cnf.Kafka.ConsumerGroupId, readerCfg(), []string{cnf.Kafka.Topic}),
 		writer:            newKafkaWriter(brokers, writerCfg(), []string{cnf.Kafka.Topic}),
 		delayedReader:     delayedReader,
 		delayedWriter:     delayedWriter,
@@ -245,18 +275,6 @@ func (b *KafkaBroker) StartConsuming(consumerTag string, concurrency int, taskPr
 				close(deliveries)
 				return
 			default:
-				//ctx, cancelFunc := context.WithTimeout(context.Background(), time.Hour*24)
-				//m, err := b.reader.Consume(ctx)
-				//
-				//// timeout error, then retry
-				//if errors.Is(err, context.DeadlineExceeded) {
-				//	continue
-				//}
-				//if err != nil {
-				//	errorsChan <- err
-				//	cancelFunc()
-				//	return
-				//}
 				deliveries <- messageInfo{reader: b.reader}
 			}
 		}
